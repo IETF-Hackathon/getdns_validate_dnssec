@@ -1,0 +1,3 @@
+sbin_PROGRAMS=getdns_validate_dnssec
+
+getdns_validate_dnssec_SOURCES=getdns_validate_dnssec.c
