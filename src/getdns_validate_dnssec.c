@@ -40,9 +40,62 @@
 #include <time.h>
 #include <errno.h>
 
+getdns_return_t root_first(getdns_list *in, getdns_list **out)
+{
+	getdns_return_t r;
+	size_t len, i;
+
+	if ((r = getdns_list_get_length(in, &len)))
+		return r;
+
+	for (i = 0; i < len; i++) {
+		getdns_dict *rr;
+		getdns_bindata *name;
+		uint32_t rr_type = 0;
+
+		if ((r = getdns_list_get_dict(in, i, &rr))
+		||  (r = getdns_dict_get_bindata(rr, "name", &name))
+		||  (r = getdns_dict_get_int(rr, "type", &rr_type)))
+			return r;
+		if (name->size == 1 && name->data[0] == 0
+		&&  rr_type != GETDNS_RRTYPE_RRSIG) {
+			size_t j = i, j_len = i, k = 0;
+			
+			if (!(*out = getdns_list_create()))
+				return GETDNS_RETURN_MEMORY_ERROR;
+
+			if ((r = getdns_list_set_dict(*out, k++, rr))) {
+				getdns_list_destroy(*out);
+				return r;
+			}
+			j++;
+			while (j < len) {
+				if ((r = getdns_list_get_dict(in, j++, &rr))
+				||  (r = getdns_list_set_dict(*out, k++, rr))){
+					getdns_list_destroy(*out);
+					return r;
+				}
+			}
+			for (j = 0; j < j_len; j++) {
+				if ((r = getdns_list_get_dict(in, j, &rr))
+				||  (r = getdns_list_set_dict(*out, k++, rr))){
+					getdns_list_destroy(*out);
+					return r;
+				}
+			}
+			return GETDNS_RETURN_GOOD;
+		}
+	}
+	if (i == len)
+		*out = in;
+
+	return GETDNS_RETURN_GOOD;
+}
+
 int main(int argc, char **argv)
 {
 	getdns_list      *to_validate        = NULL;
+	getdns_list      *to_validate_fixed  = NULL;
 	getdns_list      *support_records    = NULL;
 	getdns_list      *trust_anchors      = NULL;
 	FILE             *fh_to_validate     = NULL;
@@ -70,6 +123,9 @@ int main(int argc, char **argv)
 	} else if ((r = getdns_fp2rr_list(fh_to_validate
 	                                 ,  &to_validate, NULL, 3600)))
 		fprintf(stderr, "Error reading \"%s\"", argv[1]);
+
+	else if ((r = root_first(to_validate, &to_validate_fixed)))
+		fprintf(stderr, "Error reordering \"%s\"", argv[1]);
 
 	else if (!(fh_support_records = fopen(argv[2], "r"))) {
 		fprintf(stderr, "Error opening \"%s\"", argv[2]);
@@ -104,7 +160,7 @@ int main(int argc, char **argv)
 		fprintf(stderr, "Could not parse qtype");
 
 	else if (!qname && (r = getdns_validate_dnssec2(
-	    to_validate, support_records, trust_anchors,
+	    to_validate_fixed, support_records, trust_anchors,
 	    argc > 4 ? mktime(&tm) : time(NULL), 0))) {
 		switch (r) {
 		case GETDNS_DNSSEC_SECURE:
@@ -136,8 +192,8 @@ int main(int argc, char **argv)
 		fprintf(stderr, "Could not set qclass");
 
 	else if ((r = getdns_dict_set_list(
-	    nx_reply, "/authority", to_validate)))
-		fprintf(stderr, "Could not set authority section");
+	    nx_reply, "/answer", to_validate_fixed)))
+		fprintf(stderr, "Could not set answer section");
 
 	else if (!(nx_list = getdns_list_create())) {
 		fprintf(stderr, "Could not create nx_list list");
