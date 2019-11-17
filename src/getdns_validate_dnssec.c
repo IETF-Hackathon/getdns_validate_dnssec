@@ -50,11 +50,17 @@ int main(int argc, char **argv)
 	FILE             *fh_trust_anchors   = NULL;
 	getdns_return_t   r = GETDNS_RETURN_GOOD;
 	struct tm tm;
+	char              qtype_str[1024]    = "GETDNS_RRTYPE_";
+	getdns_bindata   *qname              = NULL;
+	uint32_t          qtype              = GETDNS_RRTYPE_A;
+	getdns_dict      *nx_reply           = NULL;
+	getdns_list      *nx_list            = NULL;
 
 	(void)memset(&tm, 0, sizeof(tm));
 	if (argc < 3)
 		fprintf(stderr, "usage: %s <to_validate> <support_records>"
-		                " [ <trust_anchors> ] [ <yyyy-mm-dd> ]\n"
+		                " [ <trust_anchors> ] [ <yyyy-mm-dd> ]"
+				" [ <dname> ] [ <qtype> ]\n"
 				, argv[0]);
 
 	else if (!(fh_to_validate = fopen(argv[1], "r"))) {
@@ -90,7 +96,14 @@ int main(int argc, char **argv)
 		fprintf(stderr, "Could not parse date string");
 		r = GETDNS_RETURN_IO_ERROR;
 
-	} else if ((r = getdns_validate_dnssec2(
+	} else if (argc > 5 && (r = getdns_str2bindata(argv[5], &qname)))
+		fprintf(stderr, "Could not parse qname");
+
+	else if (argc > 6 &&
+	    (r = getdns_str2int(strcat(qtype_str, argv[6]), &qtype)))
+		fprintf(stderr, "Could not parse qtype");
+
+	else if (!qname && (r = getdns_validate_dnssec2(
 	    to_validate, support_records, trust_anchors,
 	    argc > 4 ? mktime(&tm) : time(NULL), 0))) {
 		switch (r) {
@@ -103,10 +116,53 @@ int main(int argc, char **argv)
 			r = GETDNS_RETURN_GOOD;
 			break;
 		default:
-			fprintf(stderr, "Error validaing");
+			fprintf(stderr, "Error validating");
 			break;
 		};
-	}
+	} else if (!(nx_reply = getdns_dict_create())) {
+		fprintf(stderr, "Could not create nx_reply dict");
+		r = GETDNS_RETURN_MEMORY_ERROR;
+
+	} else if ((r = getdns_dict_set_bindata(
+	    nx_reply, "/question/qname", qname)))
+		fprintf(stderr, "Could not set qname");
+
+	else if ((r = getdns_dict_set_int(
+	    nx_reply, "/question/qtype", qtype)))
+		fprintf(stderr, "Could not set qtype");
+
+	else if ((r = getdns_dict_set_int(
+	    nx_reply, "/question/qclass", GETDNS_RRCLASS_IN)))
+		fprintf(stderr, "Could not set qclass");
+
+	else if ((r = getdns_dict_set_list(
+	    nx_reply, "/authority", to_validate)))
+		fprintf(stderr, "Could not set authority section");
+
+	else if (!(nx_list = getdns_list_create())) {
+		fprintf(stderr, "Could not create nx_list list");
+		r = GETDNS_RETURN_MEMORY_ERROR;
+
+	} else if ((r = getdns_list_set_dict(nx_list, 0, nx_reply)))
+		fprintf(stderr, "Could not append nx_reply to nx_list");
+
+	else if ((r = getdns_validate_dnssec2(
+	    nx_list, support_records, trust_anchors,
+	    argc > 4 ? mktime(&tm) : time(NULL), 0))) {
+		switch (r) {
+		case GETDNS_DNSSEC_SECURE:
+		case GETDNS_DNSSEC_INSECURE:
+		case GETDNS_DNSSEC_INDETERMINATE:
+		case GETDNS_DNSSEC_BOGUS:
+			printf("%d %s\n", r,
+			    getdns_get_errorstr_by_id(r));
+			r = GETDNS_RETURN_GOOD;
+			break;
+		default:
+			fprintf(stderr, "Error validating");
+			break;
+		};
+	} 
 	if (fh_to_validate)
 		(void) fclose(fh_to_validate);
 
