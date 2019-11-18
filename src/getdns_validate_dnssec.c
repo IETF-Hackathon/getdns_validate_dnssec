@@ -47,53 +47,65 @@
 getdns_return_t root_first(getdns_list *in, getdns_list **out)
 {
 	getdns_return_t r;
-	size_t in_len, i;
+	size_t in_len, i, j, j_len, k;
+	getdns_dict *rr;
+	getdns_bindata *name;
+	uint32_t rr_type = 0;
 
 	if ((r = getdns_list_get_length(in, &in_len)))
 		return r;
 
 	for (i = 0; i < in_len; i++) {
-		getdns_dict *rr;
-		getdns_bindata *name;
-		uint32_t rr_type = 0;
-
 		if ((r = getdns_list_get_dict(in, i, &rr))
 		||  (r = getdns_dict_get_bindata(rr, "name", &name))
 		||  (r = getdns_dict_get_int(rr, "type", &rr_type)))
 			return r;
+
 		if (name->size == 1 && name->data[0] == 0
-		&&  rr_type != GETDNS_RRTYPE_RRSIG) {
-			size_t j = i, j_len = i, k = 0;
-			
-			if (!(*out = getdns_list_create()))
-				return GETDNS_RETURN_MEMORY_ERROR;
-
-			if ((r = getdns_list_set_dict(*out, k++, rr))) {
-				getdns_list_destroy(*out);
-				return r;
-			}
-			j++;
-			while (j < in_len) {
-				if ((r = getdns_list_get_dict(in, j++, &rr))
-				||  (r = getdns_list_set_dict(*out, k++, rr))){
-					getdns_list_destroy(*out);
-					return r;
-				}
-			}
-			for (j = 0; j < j_len; j++) {
-				if ((r = getdns_list_get_dict(in, j, &rr))
-				||  (r = getdns_list_set_dict(*out, k++, rr))){
-					getdns_list_destroy(*out);
-					return r;
-				}
-			}
-			return GETDNS_RETURN_GOOD;
-		}
+		&&  rr_type != GETDNS_RRTYPE_RRSIG)
+			break;
 	}
-	if (i == in_len)
+	if (i == in_len) {
 		*out = in;
+		return GETDNS_RETURN_GOOD;
+	}
+	j = j_len = i;
+	k = 0;
+		
+	if (!(*out = getdns_list_create()))
+		return GETDNS_RETURN_MEMORY_ERROR;
 
-	return GETDNS_RETURN_GOOD;
+	if ((r = getdns_list_set_dict(*out, k++, rr)))
+		; /* pass */
+
+	else while (++j < in_len) {
+		if ((r = getdns_list_get_dict(in, j, &rr))
+		||  (r = getdns_list_set_dict(*out, k++, rr)))
+			break;
+	}
+	if (!r) for (j = 0; j < j_len; j++) {
+		if ((r = getdns_list_get_dict(in, j, &rr))
+		||  (r = getdns_list_set_dict(*out, k++, rr)))
+			break;
+	}
+	if (r)
+		getdns_list_destroy(*out);
+	return r;
+}
+
+getdns_return_t print_dnssec_status(int status)
+{
+	switch (status) {
+	case GETDNS_DNSSEC_SECURE:
+	case GETDNS_DNSSEC_INSECURE:
+	case GETDNS_DNSSEC_INDETERMINATE:
+	case GETDNS_DNSSEC_BOGUS:
+		printf("%i %s\n", status, getdns_get_errorstr_by_id(status));
+		return GETDNS_RETURN_GOOD;
+	default:
+		fprintf(stderr, "Error validating");
+		return status;
+	};
 }
 
 int main(int argc, char **argv)
@@ -165,21 +177,10 @@ int main(int argc, char **argv)
 
 	else if (!qname && (r = getdns_validate_dnssec2(
 	    to_validate_fixed, support_records, trust_anchors,
-	    argc > 4 ? mktime(&tm) : time(NULL), 0))) {
-		switch (r) {
-		case GETDNS_DNSSEC_SECURE:
-		case GETDNS_DNSSEC_INSECURE:
-		case GETDNS_DNSSEC_INDETERMINATE:
-		case GETDNS_DNSSEC_BOGUS:
-			printf("%d %s\n", r,
-			    getdns_get_errorstr_by_id(r));
-			r = GETDNS_RETURN_GOOD;
-			break;
-		default:
-			fprintf(stderr, "Error validating");
-			break;
-		};
-	} else if (!(nx_reply = getdns_dict_create())) {
+	    argc > 4 ? mktime(&tm) : time(NULL), 0)))
+		r = print_dnssec_status(r);
+
+	else if (!(nx_reply = getdns_dict_create())) {
 		fprintf(stderr, "Could not create nx_reply dict");
 		r = GETDNS_RETURN_MEMORY_ERROR;
 
@@ -208,34 +209,25 @@ int main(int argc, char **argv)
 
 	else if ((r = getdns_validate_dnssec2(
 	    nx_list, support_records, trust_anchors,
-	    argc > 4 ? mktime(&tm) : time(NULL), 0))) {
-		switch (r) {
-		case GETDNS_DNSSEC_SECURE:
-		case GETDNS_DNSSEC_INSECURE:
-		case GETDNS_DNSSEC_INDETERMINATE:
-		case GETDNS_DNSSEC_BOGUS:
-			printf("%d %s\n", r,
-			    getdns_get_errorstr_by_id(r));
-			r = GETDNS_RETURN_GOOD;
-			break;
-		default:
-			fprintf(stderr, "Error validating");
-			break;
-		};
-	} 
-	if (fh_to_validate)
-		(void) fclose(fh_to_validate);
+	    argc > 4 ? mktime(&tm) : time(NULL), 0)))
+		r = print_dnssec_status(r);
 
-	if (fh_support_records)
-		(void) fclose(fh_support_records);
-
-	if (fh_trust_anchors)
-		(void) fclose(fh_trust_anchors);
+	if (to_validate)	getdns_list_destroy(to_validate);
+	if (to_validate_fixed && to_validate_fixed != to_validate)
+		getdns_list_destroy(to_validate_fixed);
+	if (support_records)	getdns_list_destroy(support_records);
+	if (trust_anchors)	getdns_list_destroy(trust_anchors);
+	if (fh_to_validate)	(void) fclose(fh_to_validate);
+	if (fh_support_records)	(void) fclose(fh_support_records);
+	if (fh_trust_anchors)	(void) fclose(fh_trust_anchors);
+	if (qname)		{ free(qname->data); free(qname); }
+	if (nx_reply)		getdns_dict_destroy(nx_reply);
+	if (nx_list)		getdns_list_destroy(nx_list);
 
 	if (r) {
 		fprintf(stderr, ": %s\n", r == GETDNS_RETURN_IO_ERROR ?
 		    strerror(errno) : getdns_get_errorstr_by_id(r));
-		exit(EXIT_FAILURE);
+		return EXIT_FAILURE;
 	}
-	return 0;
+	return EXIT_SUCCESS;
 }
