@@ -40,15 +40,19 @@
 #include <time.h>
 #include <errno.h>
 
+/* root_first is needed to route around a bug in the current version of the
+   getdns API that requires records in the root to be first.
+   It takes in a getdns_list of resource records, and returns it with the shortest
+   ones first. All failures are returned early. */
 getdns_return_t root_first(getdns_list *in, getdns_list **out)
 {
 	getdns_return_t r;
-	size_t len, i;
+	size_t in_len, i;
 
-	if ((r = getdns_list_get_length(in, &len)))
+	if ((r = getdns_list_get_length(in, &in_len)))
 		return r;
 
-	for (i = 0; i < len; i++) {
+	for (i = 0; i < in_len; i++) {
 		getdns_dict *rr;
 		getdns_bindata *name;
 		uint32_t rr_type = 0;
@@ -69,7 +73,7 @@ getdns_return_t root_first(getdns_list *in, getdns_list **out)
 				return r;
 			}
 			j++;
-			while (j < len) {
+			while (j < in_len) {
 				if ((r = getdns_list_get_dict(in, j++, &rr))
 				||  (r = getdns_list_set_dict(*out, k++, rr))){
 					getdns_list_destroy(*out);
@@ -86,7 +90,7 @@ getdns_return_t root_first(getdns_list *in, getdns_list **out)
 			return GETDNS_RETURN_GOOD;
 		}
 	}
-	if (i == len)
+	if (i == in_len)
 		*out = in;
 
 	return GETDNS_RETURN_GOOD;
