@@ -41,9 +41,12 @@
 #include <errno.h>
 
 /* root_first is needed to route around a bug in the current version of the
-   getdns API that requires records in the root to be first.
-   It takes in a getdns_list of resource records, and returns it with the shortest
-   ones first. All failures are returned early. */
+ * getdns API that requires non RRSIG records in the root to be first.
+ * It scans a getdns_list of resource records, and returns a new list rotated
+ * to make the root non RRSIG record first.
+ * Without root records, no new list is created and the input list is returned.
+ * All failures are returned early.
+ */
 getdns_return_t root_first(getdns_list *in, getdns_list **out)
 {
 	getdns_return_t r;
@@ -52,6 +55,7 @@ getdns_return_t root_first(getdns_list *in, getdns_list **out)
 	getdns_bindata *name;
 	uint32_t rr_type = 0;
 
+	/* Scan list `in` for root non RRSIG resource record */
 	if ((r = getdns_list_get_length(in, &in_len)))
 		return r;
 
@@ -66,23 +70,26 @@ getdns_return_t root_first(getdns_list *in, getdns_list **out)
 			break;
 	}
 	if (i == in_len) {
+		/* No root non RRSIG resource record found.
+		 * return the original list
+		 */
 		*out = in;
 		return GETDNS_RETURN_GOOD;
 	}
-	j = j_len = i;
-	k = 0;
-		
+	/* root non RRSIG record found at position `i`.
+	 * Create a new list copying the resource records from `i` till the
+	 * end, and then from 0 till `i`.
+	 */
 	if (!(*out = getdns_list_create()))
 		return GETDNS_RETURN_MEMORY_ERROR;
 
-	if ((r = getdns_list_set_dict(*out, k++, rr)))
-		; /* pass */
-
-	else while (++j < in_len) {
+	/* Copy from `i` till the end into the new list */
+	for (j_len = j = i, k = 0; j < in_len; j++) {
 		if ((r = getdns_list_get_dict(in, j, &rr))
 		||  (r = getdns_list_set_dict(*out, k++, rr)))
 			break;
 	}
+	/* Copy from 0 till `i` end into the new list */
 	if (!r) for (j = 0; j < j_len; j++) {
 		if ((r = getdns_list_get_dict(in, j, &rr))
 		||  (r = getdns_list_set_dict(*out, k++, rr)))
