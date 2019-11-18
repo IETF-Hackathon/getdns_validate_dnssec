@@ -38,6 +38,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 #include <errno.h>
 
 /* root_first is needed to route around a bug in the current version of the
@@ -115,8 +116,45 @@ getdns_return_t print_dnssec_status(int status)
 	};
 }
 
+void print_usage(FILE *out)
+{
+	fprintf(out, "usage: getdns_validate_dnssec [<option> ...] "
+	    "<to_validate> [<qname>] [<qtype>]\n\n");
+	fprintf(out,"\tDNSSEC validate RRsets in <to_validate>. "
+	    "When <qname> and <qtype>\n");
+	fprintf(out, "\tare specified, the non existence proof is validated "
+	    "for that query\n");
+	fprintf(out, "\tname and type with the NSEC or NSEC3 records in "
+	    "<to_validate>\n\n");
+	fprintf(out, "options:\n");
+	fprintf(out, "\t-h\tprint this text\n");
+	fprintf(out, "\t-d <time>\n\t\tSet validation time.\n"
+	    "\t\t<date> should be in ISO 8601 format.\n"
+	    "\t\tyyyy-mm-dd or yyyy-mm-ddThh:mm:ssZ\n\n");
+	fprintf(out, "\t-k <trust acnhors file>\n"
+	    "\t\tFile containing trust anchor RRsets.\n"
+	    "\t\tThese may be of type DNSKEY or DS\n\n");
+	fprintf(out, "\t-s <support records file>\n"
+	    "\t\tFile containing the necessary RRsets to build the chain\n"
+	    "\t\tof trust from one of the trust anchors up to the RRsets\n"
+	    "\t\tin <to_validate>\n");
+}
+
+const char *fqdn(const char *qname)
+{
+	static char fqdn_buf[1025] = "";
+
+	if (strlen(qname) == 0
+	||  qname[strlen(qname)-1] == '.'
+	||  strlen(qname) >= sizeof(fqdn_buf))
+		return qname;
+	else	return strcat(strcat(fqdn_buf, qname), ".");
+}
+
 int main(int argc, char **argv)
 {
+	const char       *support_records_fn = NULL;
+	const char       *trust_anchors_fn   = NULL;
 	getdns_list      *to_validate        = NULL;
 	getdns_list      *to_validate_fixed  = NULL;
 	getdns_list      *support_records    = NULL;
@@ -125,22 +163,49 @@ int main(int argc, char **argv)
 	FILE             *fh_support_records = NULL;
 	FILE             *fh_trust_anchors   = NULL;
 	getdns_return_t   r = GETDNS_RETURN_GOOD;
-	struct tm tm;
+
 	char              qtype_str[1024]    = "GETDNS_RRTYPE_";
 	getdns_bindata   *qname              = NULL;
 	uint32_t          qtype              = GETDNS_RRTYPE_A;
 	getdns_dict      *nx_reply           = NULL;
 	getdns_list      *nx_list            = NULL;
 
+	int               opt;
+	struct tm         tm;
 	(void)memset(&tm, 0, sizeof(tm));
-	if (argc < 3)
-		fprintf(stderr, "usage: %s <to_validate> <support_records>"
-		                " [ <trust_anchors> ] [ <yyyy-mm-dd> ]"
-				" [ <dname> ] [ <qtype> ]\n"
-				, argv[0]);
+	time_t            validation_time    = time(NULL);
+	char             *endptr;
 
-	else if (!(fh_to_validate = fopen(argv[1], "r"))) {
-		fprintf(stderr, "Error opening \"%s\"", argv[1]);
+	while ((opt = getopt(argc, argv, "d:hk:s:")) != -1) {
+		switch(opt) {
+		case 'd':
+			if (!(endptr = strptime(optarg, "%F", &tm))
+			|| (   *endptr != 0
+			   && !(endptr = strptime(optarg, "%FT%T%z", &tm)))) {
+				print_usage(stderr);
+				exit(EXIT_FAILURE);
+			}
+			validation_time = mktime(&tm);
+			break;
+		case 'h':
+			print_usage(stdout);
+			exit(EXIT_SUCCESS);
+		case 'k':
+			trust_anchors_fn = optarg;
+			break;
+		case 's':
+			support_records_fn = optarg;
+			break;
+		default:
+			print_usage(stderr);
+			exit(EXIT_FAILURE);
+		}
+	}
+	if (optind >= argc)
+		print_usage(stderr);
+
+	else if (!(fh_to_validate = fopen(argv[optind], "r"))) {
+		fprintf(stderr, "Error opening \"%s\"", argv[optind]);
 		r = GETDNS_RETURN_IO_ERROR;
 
 	} else if ((r = getdns_fp2rr_list(fh_to_validate
@@ -150,41 +215,43 @@ int main(int argc, char **argv)
 	else if ((r = root_first(to_validate, &to_validate_fixed)))
 		fprintf(stderr, "Error reordering \"%s\"", argv[1]);
 
-	else if (!(fh_support_records = fopen(argv[2], "r"))) {
-		fprintf(stderr, "Error opening \"%s\"", argv[2]);
+	else if (support_records_fn
+	    && !(fh_support_records = fopen(support_records_fn, "r"))) {
+		fprintf(stderr, "Error opening \"%s\"", support_records_fn);
 		r = GETDNS_RETURN_IO_ERROR;
 
-	} else if ((r = getdns_fp2rr_list(fh_support_records
-	                                 ,  &support_records, NULL, 3600)))
-		fprintf(stderr, "Error reading \"%s\"", argv[2]);
+	} else if (fh_support_records
+	    && (r = getdns_fp2rr_list(fh_support_records
+	                             ,  &support_records, NULL, 3600)))
+		fprintf(stderr, "Error reading \"%s\"", support_records_fn);
 
-	else if (argc > 3 && !(fh_trust_anchors = fopen(argv[3], "r"))) {
-		fprintf(stderr, "Error opening \"%s\"", argv[3]);
+	else if (trust_anchors_fn
+	    && !(fh_trust_anchors = fopen(trust_anchors_fn, "r"))) {
+		fprintf(stderr, "Error opening \"%s\"", trust_anchors_fn);
 		r = GETDNS_RETURN_IO_ERROR;
 
-	} else if (fh_trust_anchors && (r = getdns_fp2rr_list(
-	    fh_trust_anchors, &trust_anchors, NULL, 3600)))
-		fprintf(stderr, "Error reading \"%s\"", argv[3]);
+	} else if (fh_trust_anchors
+	    && (r = getdns_fp2rr_list(fh_trust_anchors
+	                             ,  &trust_anchors, NULL, 3600)))
+		fprintf(stderr, "Error reading \"%s\"", trust_anchors_fn);
 
 	else if (!trust_anchors &&
 	    !(trust_anchors = getdns_root_trust_anchor(NULL))) {
 		fprintf(stderr, "Missing trust anchors");
 		r = GETDNS_RETURN_GENERIC_ERROR;
 
-	} else if (argc > 4 && !strptime(argv[4], "%Y-%m-%d", &tm)) {
-		fprintf(stderr, "Could not parse date string");
-		r = GETDNS_RETURN_IO_ERROR;
-
-	} else if (argc > 5 && (r = getdns_str2bindata(argv[5], &qname)))
+	} else if (optind + 1 < argc
+	    && (r = getdns_str2bindata(fqdn(argv[optind + 1]), &qname)))
 		fprintf(stderr, "Could not parse qname");
 
-	else if (argc > 6 &&
-	    (r = getdns_str2int(strcat(qtype_str, argv[6]), &qtype)))
+	else if (optind + 2 < argc
+	    && (r = getdns_str2int( strcat(qtype_str, argv[optind + 2])
+	                          , &qtype)))
 		fprintf(stderr, "Could not parse qtype");
 
 	else if (!qname && (r = getdns_validate_dnssec2(
 	    to_validate_fixed, support_records, trust_anchors,
-	    argc > 4 ? mktime(&tm) : time(NULL), 0)))
+	    validation_time, 1)))
 		r = print_dnssec_status(r);
 
 	else if (!(nx_reply = getdns_dict_create())) {
@@ -216,7 +283,7 @@ int main(int argc, char **argv)
 
 	else if ((r = getdns_validate_dnssec2(
 	    nx_list, support_records, trust_anchors,
-	    argc > 4 ? mktime(&tm) : time(NULL), 0)))
+	    validation_time, 1)))
 		r = print_dnssec_status(r);
 
 	if (to_validate)	getdns_list_destroy(to_validate);
